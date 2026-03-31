@@ -14,6 +14,13 @@ export interface SystemStats {
   kadFirewalled: boolean | null;
 }
 
+export interface SystemVersion {
+  appName: string;
+  version: string;
+  build: string;
+  platform: string;
+}
+
 export interface Download {
   hash: string;
   name: string;
@@ -33,6 +40,17 @@ export interface Download {
   partsTotal: number;
   partsAvailable: number;
   stopped: boolean;
+}
+
+export interface MutationResult {
+  hash: string | null;
+  ok: boolean;
+  error?: string | null;
+  name?: string;
+}
+
+export interface MutationResponse {
+  results: MutationResult[];
 }
 
 export interface Source {

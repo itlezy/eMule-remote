@@ -12,7 +12,8 @@
     "build:server": "tsc -p tsconfig.server.json",
     "build:web": "vite build",
     "build": "npm run build:web && npm run build:server",
-    "start": "node dist/server/index.js"
+    "start": "node dist/server/index.js",
+    "test": "tsx --test src/server/**/*.test.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",

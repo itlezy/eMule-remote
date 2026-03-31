@@ -86,6 +86,15 @@ h2,
   border: 1px solid var(--line);
 }
 
+.banner {
+  border: 1px solid rgba(180, 120, 12, 0.22);
+  border-radius: 1rem;
+  padding: 0.9rem 1rem;
+  margin-bottom: 1rem;
+  background: rgba(180, 120, 12, 0.08);
+  color: #6e4c1f;
+}
+
 .connection-badge.offline {
   color: var(--danger);
 }
@@ -291,6 +300,10 @@ textarea {
 
 .message.info {
   background: rgba(180, 76, 34, 0.1);
+}
+
+.empty-state {
+  padding: 0.6rem 0;
 }
 
 @media (max-width: 1080px) {

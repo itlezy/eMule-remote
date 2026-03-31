@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from './lib/api';
-  import type { Download, LogEntry, PipeEventEnvelope, Source, SystemStats } from './lib/types';
+  import type { Download, LogEntry, PipeEventEnvelope, Source, SystemStats, SystemVersion } from './lib/types';
 
-  let version = 'eMule Remote';
+  let version: SystemVersion | null = null;
   let stats: SystemStats | null = null;
   let downloads: Download[] = [];
   let logs: LogEntry[] = [];
@@ -13,6 +13,8 @@
   let errorMessage = '';
   let infoMessage = '';
   let pipeConnected = false;
+  let isInitialLoad = true;
+  let isRefreshing = false;
 
   function formatBytes(value: number): string {
     if (value <= 0) return '0 B';
@@ -31,22 +33,36 @@
   }
 
   async function refreshAll(): Promise<void> {
-    const [health, versionData, statsData, downloadsData, logData] = await Promise.all([
-      api.health(),
-      api.systemVersion(),
-      api.systemStats(),
-      api.downloads(),
-      api.logs(),
-    ]);
+    isRefreshing = true;
+    errorMessage = '';
 
-    pipeConnected = health.pipeConnected;
-    version = `${versionData.appName} ${versionData.version}`;
-    stats = statsData;
-    downloads = downloadsData;
-    logs = logData;
+    try {
+      const [health, versionData, statsData, downloadsData, logData] = await Promise.all([
+        api.health(),
+        api.systemVersion(),
+        api.systemStats(),
+        api.downloads(),
+        api.logs(),
+      ]);
 
-    if (selectedHash) {
-      await refreshSources(selectedHash);
+      pipeConnected = health.pipeConnected;
+      version = versionData;
+      stats = statsData;
+      downloads = downloadsData;
+      logs = logData;
+
+      if (selectedHash && downloads.some((download) => download.hash === selectedHash)) {
+        await refreshSources(selectedHash);
+      } else {
+        selectedHash = '';
+        sources = [];
+      }
+    } catch (error) {
+      pipeConnected = false;
+      throw error;
+    } finally {
+      isRefreshing = false;
+      isInitialLoad = false;
     }
   }
 
@@ -86,9 +102,10 @@
     }
 
     try {
-      await api.addLinks(links);
+      const response = await api.addLinks(links);
       addLinksValue = '';
-      infoMessage = `${links.length} link(s) submitted`;
+      const accepted = response.results.filter((result) => result.ok).length;
+      infoMessage = `${accepted}/${links.length} link(s) submitted`;
       await refreshAll();
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'failed to add links';
@@ -123,14 +140,14 @@
 </script>
 
 <svelte:head>
-  <title>{version}</title>
+  <title>{version ? `${version.appName} ${version.version}` : 'eMule Remote'}</title>
 </svelte:head>
 
 <main class="shell">
   <section class="masthead">
     <div>
       <p class="eyebrow">eMule Remote</p>
-      <h1>{version}</h1>
+      <h1>{version ? `${version.appName} ${version.version}` : 'eMule Remote'}</h1>
       <p class="subhead">A narrow remote surface for the active download queue, live rates, and recent logs.</p>
     </div>
     <div class:offline={!pipeConnected} class="connection-badge">
@@ -138,6 +155,12 @@
       <span>{pipeConnected ? 'Pipe Connected' : 'Pipe Disconnected'}</span>
     </div>
   </section>
+
+  {#if !pipeConnected}
+    <section class="banner warning">
+      The remote is running, but the eMule pipe is currently disconnected. `GET /health` remains available while the desktop app is offline.
+    </section>
+  {/if}
 
   <section class="status-grid">
     <article class="stat-card accent">
@@ -169,7 +192,7 @@
           <p class="eyebrow">Downloads</p>
           <h2>Current Queue</h2>
         </div>
-        <button class="ghost" on:click={() => void refreshAll()}>Refresh</button>
+        <button class="ghost" disabled={isRefreshing} on:click={() => void refreshAll()}>{isRefreshing ? 'Refreshing...' : 'Refresh'}</button>
       </div>
 
       <label class="add-box">
@@ -186,38 +209,44 @@
       {/if}
 
       <div class="downloads-table">
-        {#each downloads as download}
-          <div
-            class:selected={selectedHash === download.hash}
-            class="download-row"
-            on:click={() => void refreshSources(download.hash)}
-            on:keydown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                void refreshSources(download.hash);
-              }
-            }}
-            role="button"
-            tabindex="0"
-          >
-            <div class="download-main">
-              <strong>{download.name}</strong>
-              <span>{download.state} · {Math.round(download.progress * 100)}%</span>
+        {#if isInitialLoad}
+          <p class="empty-state">Loading queue snapshot...</p>
+        {:else if downloads.length === 0}
+          <p class="empty-state">No downloads are currently in the queue.</p>
+        {:else}
+          {#each downloads as download}
+            <div
+              class:selected={selectedHash === download.hash}
+              class="download-row"
+              on:click={() => void refreshSources(download.hash)}
+              on:keydown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  void refreshSources(download.hash);
+                }
+              }}
+              role="button"
+              tabindex="0"
+            >
+              <div class="download-main">
+                <strong>{download.name}</strong>
+                <span>{download.state} · {Math.round(download.progress * 100)}%</span>
+              </div>
+              <div class="download-meta">
+                <span>{formatBytes(download.sizeDone)} / {formatBytes(download.size)}</span>
+                <span>{formatRate(download.downloadSpeed)}</span>
+                <span>{download.sourcesTransferring}/{download.sources} sources</span>
+              </div>
+              <div class="download-actions">
+                <button class="ghost compact" on:click|stopPropagation={() => void runAction('pause', download.hash)}>Pause</button>
+                <button class="ghost compact" on:click|stopPropagation={() => void runAction('resume', download.hash)}>Resume</button>
+                <button class="ghost compact" on:click|stopPropagation={() => void runAction('stop', download.hash)}>Stop</button>
+                <button class="ghost compact" on:click|stopPropagation={() => void runAction('recheck', download.hash)}>Recheck</button>
+                <button class="danger compact" on:click|stopPropagation={() => void runAction('remove', download.hash)}>Delete</button>
+              </div>
             </div>
-            <div class="download-meta">
-              <span>{formatBytes(download.sizeDone)} / {formatBytes(download.size)}</span>
-              <span>{formatRate(download.downloadSpeed)}</span>
-              <span>{download.sourcesTransferring}/{download.sources} sources</span>
-            </div>
-            <div class="download-actions">
-              <button class="ghost compact" on:click|stopPropagation={() => void runAction('pause', download.hash)}>Pause</button>
-              <button class="ghost compact" on:click|stopPropagation={() => void runAction('resume', download.hash)}>Resume</button>
-              <button class="ghost compact" on:click|stopPropagation={() => void runAction('stop', download.hash)}>Stop</button>
-              <button class="ghost compact" on:click|stopPropagation={() => void runAction('recheck', download.hash)}>Recheck</button>
-              <button class="danger compact" on:click|stopPropagation={() => void runAction('remove', download.hash)}>Delete</button>
-            </div>
-          </div>
-        {/each}
+          {/each}
+        {/if}
       </div>
     </div>
 
@@ -258,12 +287,16 @@
         </div>
 
         <div class="log-list">
-          {#each logs as entry}
-            <div class={`log-row ${entry.level}`}>
-              <time>{new Date(entry.timestamp * 1000).toLocaleTimeString()}</time>
-              <span>{entry.message}</span>
-            </div>
-          {/each}
+          {#if logs.length === 0}
+            <p class="empty-state">No recent log entries are available.</p>
+          {:else}
+            {#each logs as entry}
+              <div class={`log-row ${entry.level}`}>
+                <time>{new Date(entry.timestamp * 1000).toLocaleTimeString()}</time>
+                <span>{entry.message}</span>
+              </div>
+            {/each}
+          {/if}
         </div>
       </div>
     </div>

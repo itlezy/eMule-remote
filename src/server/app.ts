@@ -22,6 +22,40 @@ const deleteSchema = hashesSchema.extend({
 const addLinksSchema = z.object({
   links: z.array(z.string().trim().min(1, 'links must not contain empty values')).min(1, 'links must contain at least one link'),
 });
+const prioritySchema = z.object({
+  priority: z.string().trim().min(1, 'priority must not be empty'),
+});
+const categorySchema = z.object({
+  category: z.coerce.number().int().nonnegative('category must be a non-negative integer'),
+});
+const preferencesSchema = z.object({
+  prefs: z.record(z.unknown()),
+});
+const serverEndpointBaseSchema = z.object({
+  addr: z.string().trim().min(1, 'addr must not be empty').optional(),
+  port: z.coerce.number().int().min(1).max(65535).optional(),
+});
+const serverConnectSchema = serverEndpointBaseSchema.superRefine((value, ctx) => {
+  if ((value.addr === undefined) !== (value.port === undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'addr and port must be provided together',
+    });
+  }
+});
+const serverAddSchema = serverEndpointBaseSchema.extend({
+  addr: z.string().trim().min(1, 'addr must not be empty'),
+  port: z.coerce.number().int().min(1).max(65535),
+  name: z.string().trim().min(1, 'name must not be empty').optional(),
+});
+const searchStartSchema = z.object({
+  query: z.string().trim().min(1, 'query must not be empty'),
+  type: z.string().trim().optional(),
+  method: z.string().trim().optional(),
+  min_size: z.coerce.number().int().nonnegative().optional(),
+  max_size: z.coerce.number().int().nonnegative().optional(),
+  ext: z.string().trim().optional(),
+});
 const limitSchema = z.coerce.number().int().catch(200);
 
 /**
@@ -78,6 +112,27 @@ function parseLimit(value: unknown): number {
   return Math.min(Math.max(parsed, 1), 500);
 }
 
+function parseOptionalCategory(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const result = z.coerce.number().int().nonnegative('category must be a non-negative integer').safeParse(value);
+  if (!result.success) {
+    throw new HttpError(400, 'INVALID_ARGUMENT', result.error.issues.map((issue) => issue.message).join('; '));
+  }
+
+  return result.data;
+}
+
+function parseSearchId(value: unknown): string {
+  const result = z.string().trim().min(1, 'search_id must not be empty').safeParse(value);
+  if (!result.success) {
+    throw new HttpError(400, 'INVALID_ARGUMENT', result.error.issues.map((issue) => issue.message).join('; '));
+  }
+  return result.data;
+}
+
 async function fileExists(filePath: string): Promise<boolean> {
   try {
     await fs.access(filePath);
@@ -105,9 +160,8 @@ export async function createApp(config: RemoteConfig, pipeClient: PipeBridge): P
   await app.register(cookie);
 
   await app.register(staticPlugin, {
-    root: config.webRoot,
+    root: path.join(config.webRoot, 'assets'),
     prefix: '/assets/',
-    wildcard: false,
   });
 
   app.addHook('preHandler', async (request) => {
@@ -135,56 +189,157 @@ export async function createApp(config: RemoteConfig, pipeClient: PipeBridge): P
     pipeConnected: pipeClient.isConnected(),
   }));
 
-  app.get('/api/v1/system/version', async () => callPipe('system/version'));
-  app.get('/api/v1/system/stats', async () => callPipe('system/stats'));
-  app.get('/api/v1/downloads', async () => callPipe('downloads/list'));
+  app.get('/api/v2/app/version', async () => callPipe('app/version'));
+  app.get('/api/v2/app/preferences', async () => callPipe('app/preferences/get'));
+  app.post('/api/v2/app/preferences', async (request) => {
+    const body = parseBody(preferencesSchema, request.body);
+    return callPipe('app/preferences/set', body);
+  });
+  app.post('/api/v2/app/shutdown', async () => callPipe('app/shutdown'));
 
-  app.get('/api/v1/downloads/:hash', async (request) => {
-    const hash = parseHashParam((request.params as { hash?: string }).hash);
-    return callPipe('downloads/get', { hash });
+  app.get('/api/v2/stats/global', async () => callPipe('stats/global'));
+
+  app.get('/api/v2/transfers', async (request) => {
+    const query = request.query as { filter?: unknown; category?: unknown };
+    const params: Record<string, unknown> = {};
+    if (typeof query.filter === 'string' && query.filter.trim() !== '') {
+      params.filter = query.filter.trim();
+    }
+
+    const category = parseOptionalCategory(query.category);
+    if (category !== undefined) {
+      params.category = category;
+    }
+
+    return callPipe('transfers/list', params);
   });
 
-  app.get('/api/v1/downloads/:hash/sources', async (request) => {
+  app.get('/api/v2/transfers/:hash', async (request) => {
     const hash = parseHashParam((request.params as { hash?: string }).hash);
-    return callPipe('downloads/sources', { hash });
+    return callPipe('transfers/get', { hash });
   });
 
-  app.post('/api/v1/downloads', async (request) => {
+  app.get('/api/v2/transfers/:hash/sources', async (request) => {
+    const hash = parseHashParam((request.params as { hash?: string }).hash);
+    return callPipe('transfers/sources', { hash });
+  });
+
+  app.post('/api/v2/transfers/add', async (request) => {
     const body = parseBody(addLinksSchema, request.body);
-    return callPipe('downloads/add', body);
+    const results: Array<{ hash: string | null; ok: boolean; error?: string; name?: string }> = [];
+
+    for (const link of body.links) {
+      try {
+        const result = await callPipe<{ hash: string; name: string }>('transfers/add', { link });
+        results.push({
+          hash: result.hash,
+          ok: true,
+          name: result.name,
+        });
+      } catch (error) {
+        const pipeError = error instanceof HttpError
+          ? error
+          : new HttpError(500, 'EMULE_ERROR', error instanceof Error ? error.message : 'unexpected pipe error');
+        results.push({
+          hash: null,
+          ok: false,
+          error: pipeError.message,
+        });
+      }
+    }
+
+    return { results };
   });
 
-  app.post('/api/v1/downloads/pause', async (request) => {
+  app.post('/api/v2/transfers/pause', async (request) => {
     const body = parseBody(hashesSchema, request.body);
-    return callPipe('downloads/pause', body);
+    return callPipe('transfers/pause', body);
   });
 
-  app.post('/api/v1/downloads/resume', async (request) => {
+  app.post('/api/v2/transfers/resume', async (request) => {
     const body = parseBody(hashesSchema, request.body);
-    return callPipe('downloads/resume', body);
+    return callPipe('transfers/resume', body);
   });
 
-  app.post('/api/v1/downloads/stop', async (request) => {
+  app.post('/api/v2/transfers/stop', async (request) => {
     const body = parseBody(hashesSchema, request.body);
-    return callPipe('downloads/stop', body);
+    return callPipe('transfers/stop', body);
   });
 
-  app.post('/api/v1/downloads/delete', async (request) => {
+  app.post('/api/v2/transfers/delete', async (request) => {
     const body = parseBody(deleteSchema, request.body);
-    return callPipe('downloads/delete', body);
+    return callPipe('transfers/delete', body);
   });
 
-  app.post('/api/v1/downloads/:hash/recheck', async (request) => {
+  app.post('/api/v2/transfers/:hash/recheck', async (request) => {
     const hash = parseHashParam((request.params as { hash?: string }).hash);
-    return callPipe('downloads/recheck', { hash });
+    return callPipe('transfers/recheck', { hash });
   });
 
-  app.get('/api/v1/log', async (request) => {
+  app.post('/api/v2/transfers/:hash/priority', async (request) => {
+    const hash = parseHashParam((request.params as { hash?: string }).hash);
+    const body = parseBody(prioritySchema, request.body);
+    return callPipe('transfers/set_priority', { hash, priority: body.priority });
+  });
+
+  app.post('/api/v2/transfers/:hash/category', async (request) => {
+    const hash = parseHashParam((request.params as { hash?: string }).hash);
+    const body = parseBody(categorySchema, request.body);
+    return callPipe('transfers/set_category', { hash, category: body.category });
+  });
+
+  app.get('/api/v2/uploads/list', async () => callPipe('uploads/list'));
+  app.get('/api/v2/uploads/queue', async () => callPipe('uploads/queue'));
+
+  app.get('/api/v2/servers/list', async () => callPipe('servers/list'));
+  app.get('/api/v2/servers/status', async () => callPipe('servers/status'));
+  app.post('/api/v2/servers/connect', async (request) => {
+    const body = parseBody(serverConnectSchema, request.body);
+    return callPipe('servers/connect', body);
+  });
+  app.post('/api/v2/servers/disconnect', async () => callPipe('servers/disconnect'));
+  app.post('/api/v2/servers/add', async (request) => {
+    const body = parseBody(serverAddSchema, request.body);
+    return callPipe('servers/add', body);
+  });
+  app.post('/api/v2/servers/remove', async (request) => {
+    const body = parseBody(serverEndpointBaseSchema.extend({
+      addr: z.string().trim().min(1, 'addr must not be empty'),
+      port: z.coerce.number().int().min(1).max(65535),
+    }), request.body);
+    return callPipe('servers/remove', body);
+  });
+
+  app.get('/api/v2/kad/status', async () => callPipe('kad/status'));
+  app.post('/api/v2/kad/connect', async () => callPipe('kad/connect'));
+  app.post('/api/v2/kad/disconnect', async () => callPipe('kad/disconnect'));
+  app.post('/api/v2/kad/recheck_firewall', async () => callPipe('kad/recheck_firewall'));
+
+  app.get('/api/v2/shared/list', async () => callPipe('shared/list'));
+  app.get('/api/v2/shared/:hash', async (request) => {
+    const hash = parseHashParam((request.params as { hash?: string }).hash);
+    return callPipe('shared/get', { hash });
+  });
+
+  app.post('/api/v2/search/start', async (request) => {
+    const body = parseBody(searchStartSchema, request.body);
+    return callPipe('search/start', body);
+  });
+  app.get('/api/v2/search/results', async (request) => {
+    const search_id = parseSearchId((request.query as { search_id?: unknown }).search_id);
+    return callPipe('search/results', { search_id });
+  });
+  app.post('/api/v2/search/stop', async (request) => {
+    const body = parseBody(z.object({ search_id: z.string().trim().min(1, 'search_id must not be empty') }), request.body);
+    return callPipe('search/stop', body);
+  });
+
+  app.get('/api/v2/log', async (request) => {
     const limit = parseLimit((request.query as { limit?: unknown }).limit);
     return callPipe('log/get', { limit });
   });
 
-  app.get('/api/v1/events', async (request, reply) => {
+  app.get('/api/v2/events', async (request, reply) => {
     reply.raw.setHeader('Content-Type', 'text/event-stream');
     reply.raw.setHeader('Cache-Control', 'no-cache');
     reply.raw.setHeader('Connection', 'keep-alive');
@@ -204,17 +359,20 @@ export async function createApp(config: RemoteConfig, pipeClient: PipeBridge): P
   });
 
   app.get('/', async (_request, reply) => {
+    const indexPath = path.join(config.webRoot, 'index.html');
     reply.setCookie(UI_SESSION_COOKIE, '1', {
       httpOnly: true,
       sameSite: 'lax',
       path: '/',
     });
 
-    if (!(await fileExists(path.join(config.webRoot, 'index.html')))) {
+    if (!(await fileExists(indexPath))) {
       throw new HttpError(503, 'EMULE_REMOTE_NOT_BUILT', 'frontend build output is missing, run npm run build');
     }
 
-    return reply.sendFile('index.html');
+    const indexHtml = await fs.readFile(indexPath, 'utf8');
+    reply.type('text/html; charset=utf-8');
+    return reply.send(indexHtml);
   });
 
   app.setErrorHandler((error, _request, reply) => {

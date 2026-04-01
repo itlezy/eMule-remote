@@ -46,7 +46,9 @@ class MockPipeClient extends EventEmitter implements PipeBridge {
 async function withApp(run: (app: FastifyInstance, pipe: MockPipeClient) => Promise<void>): Promise<void> {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'emule-remote-test-'));
   const webRoot = path.join(tempRoot, 'web');
+  const assetsRoot = path.join(webRoot, 'assets');
   await mkdir(webRoot, { recursive: true });
+  await mkdir(assetsRoot, { recursive: true });
   await writeFile(path.join(webRoot, 'index.html'), '<!doctype html><title>eMule Remote</title>', 'utf8');
 
   const config: RemoteConfig = {
@@ -72,10 +74,10 @@ async function withApp(run: (app: FastifyInstance, pipe: MockPipeClient) => Prom
 
 test('rejects API requests without auth', async () => {
   await withApp(async (app, pipe) => {
-    pipe.register('system/version', () => ({ appName: 'eMule' }));
+    pipe.register('app/version', () => ({ appName: 'eMule' }));
     const response = await app.inject({
       method: 'GET',
-      url: '/api/v1/system/version',
+      url: '/api/v2/app/version',
     });
 
     assert.equal(response.statusCode, 401);
@@ -105,7 +107,7 @@ test('validates MD4 hash parameters', async () => {
   await withApp(async (app) => {
     const response = await app.inject({
       method: 'GET',
-      url: '/api/v1/downloads/not-a-hash',
+      url: '/api/v2/transfers/not-a-hash',
       headers: {
         authorization: 'Bearer test-token',
       },
@@ -122,11 +124,11 @@ test('validates MD4 hash parameters', async () => {
 test('returns 503 when the pipe is disconnected', async () => {
   await withApp(async (app, pipe) => {
     pipe.setConnected(false);
-    pipe.register('system/stats', () => ({ connected: false }));
+    pipe.register('stats/global', () => ({ connected: false }));
 
     const response = await app.inject({
       method: 'GET',
-      url: '/api/v1/system/stats',
+      url: '/api/v2/stats/global',
       headers: {
         authorization: 'Bearer test-token',
       },
@@ -150,7 +152,7 @@ test('clamps the log limit to the documented maximum', async () => {
 
     const response = await app.inject({
       method: 'GET',
-      url: '/api/v1/log?limit=9999',
+      url: '/api/v2/log?limit=9999',
       headers: {
         authorization: 'Bearer test-token',
       },
@@ -164,7 +166,7 @@ test('clamps the log limit to the documented maximum', async () => {
 
 test('preserves delete semantics for partial downloads', async () => {
   await withApp(async (app, pipe) => {
-    pipe.register('downloads/delete', (params) => ({
+    pipe.register('transfers/delete', (params) => ({
       results: [
         {
           hash: params?.hashes && Array.isArray(params.hashes) ? params.hashes[0] : null,
@@ -176,7 +178,7 @@ test('preserves delete semantics for partial downloads', async () => {
 
     const withoutDeleteFiles = await app.inject({
       method: 'POST',
-      url: '/api/v1/downloads/delete',
+      url: '/api/v2/transfers/delete',
       headers: {
         authorization: 'Bearer test-token',
       },
@@ -198,7 +200,7 @@ test('preserves delete semantics for partial downloads', async () => {
 
     const withDeleteFiles = await app.inject({
       method: 'POST',
-      url: '/api/v1/downloads/delete',
+      url: '/api/v2/transfers/delete',
       headers: {
         authorization: 'Bearer test-token',
       },
@@ -215,6 +217,62 @@ test('preserves delete semantics for partial downloads', async () => {
           hash: '8958fd13501ed0347af4df142e8f5f9e',
           ok: true,
         },
+      ],
+    });
+  });
+});
+
+test('maps transfer detail routes to the final pipe surface', async () => {
+  await withApp(async (app, pipe) => {
+    pipe.register('transfers/get', (params) => ({
+      hash: params?.hash,
+      name: 'Example.bin',
+    }));
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v2/transfers/8958fd13501ed0347af4df142e8f5f9e',
+      headers: {
+        authorization: 'Bearer test-token',
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), {
+      hash: '8958fd13501ed0347af4df142e8f5f9e',
+      name: 'Example.bin',
+    });
+  });
+});
+
+test('batches transfer add requests over the single-link pipe command', async () => {
+  await withApp(async (app, pipe) => {
+    let callCount = 0;
+    pipe.register('transfers/add', (params) => {
+      callCount += 1;
+      return {
+        hash: `hash-${callCount}`,
+        name: params?.link,
+      };
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v2/transfers/add',
+      headers: {
+        authorization: 'Bearer test-token',
+      },
+      payload: {
+        links: ['ed2k://|file|one|/', 'ed2k://|file|two|/'],
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(callCount, 2);
+    assert.deepEqual(response.json(), {
+      results: [
+        { hash: 'hash-1', ok: true, name: 'ed2k://|file|one|/' },
+        { hash: 'hash-2', ok: true, name: 'ed2k://|file|two|/' },
       ],
     });
   });

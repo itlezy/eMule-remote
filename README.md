@@ -3,10 +3,10 @@
 `eMule Remote` is a standalone Node.js companion app for the desktop eMule build.
 It provides:
 
-- a local HTTP API under `/api/v1`
+- a local HTTP API under `/api/v2`
 - a basic Svelte web UI served by the same process
 - a named-pipe client that talks to the running eMule desktop app
-- a documented v1 contract in [`docs/API-CONTRACT.md`](./docs/API-CONTRACT.md)
+- a local pointer to the canonical contract in [`docs/API-CONTRACT.md`](./docs/API-CONTRACT.md)
 
 This project lives next to the main workspace at:
 
@@ -47,7 +47,7 @@ By default the service listens on:
 The root page serves the bundled web UI.
 The API base is:
 
-- `http://127.0.0.1:4713/api/v1`
+- `http://127.0.0.1:4713/api/v2`
 
 ## Environment Variables
 

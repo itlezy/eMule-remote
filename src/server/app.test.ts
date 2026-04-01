@@ -277,3 +277,85 @@ test('batches transfer add requests over the single-link pipe command', async ()
     });
   });
 });
+
+test('maps shared add routes to the canonical pipe surface', async () => {
+  await withApp(async (app, pipe) => {
+    pipe.register('shared/add', (params) => ({
+      ok: true,
+      path: params?.path,
+      alreadyShared: false,
+      queued: false,
+      file: null,
+    }));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v2/shared/add',
+      headers: {
+        authorization: 'Bearer test-token',
+      },
+      payload: {
+        path: 'C:\\share\\Example.bin',
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), {
+      ok: true,
+      path: 'C:\\share\\Example.bin',
+      alreadyShared: false,
+      queued: false,
+      file: null,
+    });
+  });
+});
+
+test('rejects ambiguous shared remove selectors', async () => {
+  await withApp(async (app) => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v2/shared/remove',
+      headers: {
+        authorization: 'Bearer test-token',
+      },
+      payload: {
+        hash: '8958fd13501ed0347af4df142e8f5f9e',
+        path: 'C:\\share\\Example.bin',
+      },
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.deepEqual(response.json(), {
+      error: 'INVALID_ARGUMENT',
+      message: 'exactly one of hash or path must be provided',
+    });
+  });
+});
+
+test('maps upload release-slot routes to the canonical pipe surface', async () => {
+  await withApp(async (app, pipe) => {
+    pipe.register('uploads/release_slot', (params) => ({
+      ok: true,
+      selector: params,
+    }));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v2/uploads/release_slot',
+      headers: {
+        authorization: 'Bearer test-token',
+      },
+      payload: {
+        userHash: '8958fd13501ed0347af4df142e8f5f9e',
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), {
+      ok: true,
+      selector: {
+        userHash: '8958fd13501ed0347af4df142e8f5f9e',
+      },
+    });
+  });
+});

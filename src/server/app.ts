@@ -31,6 +31,21 @@ const categorySchema = z.object({
 const preferencesSchema = z.object({
   prefs: z.record(z.unknown()),
 });
+const pathSchema = z.object({
+  path: z.string().trim().min(1, 'path must not be empty'),
+});
+const sharedRemoveSchema = z.object({
+  hash: hashSchema.optional(),
+  path: z.string().trim().min(1, 'path must not be empty').optional(),
+}).superRefine((value, ctx) => {
+  const selected = Number(value.hash !== undefined) + Number(value.path !== undefined);
+  if (selected !== 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'exactly one of hash or path must be provided',
+    });
+  }
+});
 const serverEndpointBaseSchema = z.object({
   addr: z.string().trim().min(1, 'addr must not be empty').optional(),
   port: z.coerce.number().int().min(1).max(65535).optional(),
@@ -55,6 +70,27 @@ const searchStartSchema = z.object({
   min_size: z.coerce.number().int().nonnegative().optional(),
   max_size: z.coerce.number().int().nonnegative().optional(),
   ext: z.string().trim().optional(),
+});
+const uploadSelectorSchema = z.object({
+  userHash: hashSchema.optional(),
+  ip: z.string().trim().min(1, 'ip must not be empty').optional(),
+  port: z.coerce.number().int().min(1).max(65535).optional(),
+}).superRefine((value, ctx) => {
+  const hasUserHash = value.userHash !== undefined;
+  const hasIp = value.ip !== undefined;
+  const hasPort = value.port !== undefined;
+  if (!hasUserHash && !hasIp && !hasPort) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'userHash or ip and port are required',
+    });
+  }
+  if (hasIp !== hasPort) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'ip and port must be provided together',
+    });
+  }
 });
 const limitSchema = z.coerce.number().int().catch(200);
 
@@ -290,6 +326,14 @@ export async function createApp(config: RemoteConfig, pipeClient: PipeBridge): P
 
   app.get('/api/v2/uploads/list', async () => callPipe('uploads/list'));
   app.get('/api/v2/uploads/queue', async () => callPipe('uploads/queue'));
+  app.post('/api/v2/uploads/remove', async (request) => {
+    const body = parseBody(uploadSelectorSchema, request.body);
+    return callPipe('uploads/remove', body);
+  });
+  app.post('/api/v2/uploads/release_slot', async (request) => {
+    const body = parseBody(uploadSelectorSchema, request.body);
+    return callPipe('uploads/release_slot', body);
+  });
 
   app.get('/api/v2/servers/list', async () => callPipe('servers/list'));
   app.get('/api/v2/servers/status', async () => callPipe('servers/status'));
@@ -319,6 +363,14 @@ export async function createApp(config: RemoteConfig, pipeClient: PipeBridge): P
   app.get('/api/v2/shared/:hash', async (request) => {
     const hash = parseHashParam((request.params as { hash?: string }).hash);
     return callPipe('shared/get', { hash });
+  });
+  app.post('/api/v2/shared/add', async (request) => {
+    const body = parseBody(pathSchema, request.body);
+    return callPipe('shared/add', body);
+  });
+  app.post('/api/v2/shared/remove', async (request) => {
+    const body = parseBody(sharedRemoveSchema, request.body);
+    return callPipe('shared/remove', body);
   });
 
   app.post('/api/v2/search/start', async (request) => {

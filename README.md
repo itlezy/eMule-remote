@@ -4,7 +4,7 @@
 It provides:
 
 - a local HTTP API under `/api/v2`
-- a basic Svelte web UI served by the same process
+- a grouped operator Svelte web UI served by the same process
 - a named-pipe client that talks to the running eMule desktop app
 - a local pointer to the canonical contract in [`docs/API-CONTRACT.md`](./docs/API-CONTRACT.md)
 
@@ -49,6 +49,18 @@ The API base is:
 
 - `http://127.0.0.1:4713/api/v2`
 
+The UI and HTTP surface follow the same grouped contract:
+
+- `app/*`
+- `stats/*`
+- `transfers/*`
+- `uploads/*`
+- `servers/*`
+- `kad/*`
+- `shared/*`
+- `search/*`
+- `log/*`
+
 ## Environment Variables
 
 - `EMULE_REMOTE_HOST`
@@ -89,4 +101,5 @@ scripts\dev-remote.cmd
 - The desktop eMule process must be running for the remote to reach the named pipe.
 - `GET /health` stays available even if eMule is not connected yet.
 - The bundled web UI is served from the same Fastify process as the API.
+- The canonical API contract lives in the sibling app repo at `eMule-build\eMule\docs\PLAN-API-SERVER.md`.
 - External API clients use bearer auth, while the bundled UI uses a same-origin cookie set by `/`.

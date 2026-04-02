@@ -245,6 +245,111 @@ test('maps transfer detail routes to the final pipe surface', async () => {
   });
 });
 
+test('maps search start routes to the canonical pipe surface', async () => {
+  await withApp(async (app, pipe) => {
+    let observedParams: Record<string, unknown> | undefined;
+    pipe.register('search/start', (params) => {
+      observedParams = params;
+      return { search_id: '42' };
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v2/search/start',
+      headers: {
+        authorization: 'Bearer test-token',
+      },
+      payload: {
+        query: '1080p',
+        method: 'kad',
+        type: 'video',
+        min_size: 700,
+        max_size: 4096,
+        ext: '.mkv',
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), { search_id: '42' });
+    assert.deepEqual(observedParams, {
+      query: '1080p',
+      method: 'kad',
+      type: 'video',
+      min_size: 700,
+      max_size: 4096,
+      ext: '.mkv',
+    });
+  });
+});
+
+test('validates search start payloads before calling the pipe', async () => {
+  await withApp(async (app) => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v2/search/start',
+      headers: {
+        authorization: 'Bearer test-token',
+      },
+      payload: {
+        query: '   ',
+      },
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.deepEqual(response.json(), {
+      error: 'INVALID_ARGUMENT',
+      message: 'query must not be empty',
+    });
+  });
+});
+
+test('maps search results routes to the canonical pipe surface', async () => {
+  await withApp(async (app, pipe) => {
+    let observedParams: Record<string, unknown> | undefined;
+    pipe.register('search/results', (params) => {
+      observedParams = params;
+      return { status: 'running', results: [] };
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v2/search/results?search_id=123',
+      headers: {
+        authorization: 'Bearer test-token',
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), { status: 'running', results: [] });
+    assert.deepEqual(observedParams, { search_id: '123' });
+  });
+});
+
+test('maps search stop routes to the canonical pipe surface', async () => {
+  await withApp(async (app, pipe) => {
+    let observedParams: Record<string, unknown> | undefined;
+    pipe.register('search/stop', (params) => {
+      observedParams = params;
+      return { ok: true };
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v2/search/stop',
+      headers: {
+        authorization: 'Bearer test-token',
+      },
+      payload: {
+        search_id: '123',
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), { ok: true });
+    assert.deepEqual(observedParams, { search_id: '123' });
+  });
+});
+
 test('batches transfer add requests over the single-link pipe command', async () => {
   await withApp(async (app, pipe) => {
     let callCount = 0;

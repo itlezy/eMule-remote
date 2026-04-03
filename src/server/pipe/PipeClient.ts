@@ -16,6 +16,7 @@ export class PipeClient extends EventEmitter {
   private reconnectTimer?: NodeJS.Timeout;
   private readBuffer = '';
   private connected = false;
+  private stopped = true;
   private readonly pending = new Map<string, PendingRequest>();
 
   constructor(
@@ -26,11 +27,24 @@ export class PipeClient extends EventEmitter {
     super();
   }
 
+  /**
+   * Starts the reconnecting named-pipe client loop once for the current instance.
+   */
   start(): void {
+    if (!this.stopped) {
+      return;
+    }
+
+    this.stopped = false;
     this.connect();
   }
 
+  /**
+   * Stops the client permanently until `start()` is called again and rejects pending work.
+   */
   stop(): void {
+    this.stopped = true;
+
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
@@ -74,6 +88,10 @@ export class PipeClient extends EventEmitter {
   }
 
   private connect(): void {
+    if (this.stopped) {
+      return;
+    }
+
     const socket = net.createConnection(this.pipeName);
     this.socket = socket;
     socket.setEncoding('utf8');
@@ -101,6 +119,7 @@ export class PipeClient extends EventEmitter {
     socket.on('close', () => {
       this.connected = false;
       this.socket = undefined;
+      this.readBuffer = '';
       for (const [id, pending] of this.pending) {
         clearTimeout(pending.timer);
         pending.reject({ code: 'EMULE_UNAVAILABLE', message: 'pipe connection closed' } satisfies PipeErrorBody);
@@ -108,7 +127,9 @@ export class PipeClient extends EventEmitter {
       }
 
       this.emit('disconnected');
-      this.reconnectTimer = setTimeout(() => this.connect(), this.reconnectDelayMs);
+      if (!this.stopped) {
+        this.reconnectTimer = setTimeout(() => this.connect(), this.reconnectDelayMs);
+      }
     });
   }
 

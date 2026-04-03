@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
@@ -13,7 +13,10 @@ const liveTest = runLivePipeTest ? test : test.skip;
 
 interface LiveSessionManifest {
   launch_status: string;
+  profile_runs_root: string;
   profile_root: string;
+  profile_latest_root: string;
+  profile_latest_published: boolean;
   config_dir: string;
   artifact_dir: string;
   pipe_name: string;
@@ -110,11 +113,19 @@ liveTest('launches a seeded live session for direct pipe and HTTP checks', async
   try {
     manifest = await startLiveSession(manifestPath);
     assert.equal(manifest.launch_status, 'launch_only_ready');
+    assert.equal(path.dirname(manifest.profile_root), manifest.profile_runs_root);
+    assert.equal(manifest.profile_latest_published, true);
+
+    const latestProfileStat = await lstat(manifest.profile_latest_root);
+    assert.equal(latestProfileStat.isSymbolicLink(), true);
 
     for (const requiredPath of [
       path.join(manifest.config_dir, 'preferences.ini'),
       path.join(manifest.config_dir, 'nodes.dat'),
       path.join(manifest.config_dir, 'server.met'),
+      path.join(manifest.profile_latest_root, 'config', 'preferences.ini'),
+      path.join(manifest.profile_latest_root, 'config', 'nodes.dat'),
+      path.join(manifest.profile_latest_root, 'config', 'server.met'),
     ]) {
       const fileText = await readFile(requiredPath);
       assert.ok(fileText.length > 0);

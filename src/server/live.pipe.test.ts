@@ -26,6 +26,11 @@ interface LiveSessionManifest {
   remote_token: string;
   process_id: number;
   remote_process_id: number;
+  cleanup_requested?: boolean;
+  cleanup_success?: boolean;
+  cleanup_attempts?: number;
+  cleanup_stopped_process_ids?: number[];
+  leftover_process_ids?: number[];
 }
 
 async function waitForConnected(client: PipeClient): Promise<void> {
@@ -39,23 +44,28 @@ async function waitForConnected(client: PipeClient): Promise<void> {
 /**
  * Launches the seeded live session helper in launch-only mode and returns its manifest.
  */
-async function startLiveSession(manifestPath: string): Promise<LiveSessionManifest> {
+async function startLiveSession(manifestPath: string, keepRunning = true): Promise<LiveSessionManifest> {
   const remoteRoot = process.cwd();
   const testsRoot = path.resolve(remoteRoot, '..', 'eMule-build-tests');
   const wrapperPath = path.join(testsRoot, 'scripts', 'run-pipe-live-matrix.ps1');
   const seedRoot = path.join(testsRoot, 'manifests', 'live-profile-seed');
-  execFileSync('pwsh', [
+  const argumentsList = [
     '-NoLogo',
     '-NoProfile',
     '-File',
     wrapperPath,
     '-SkipBuild',
     '-LaunchOnly',
-    '-KeepRunning',
     '-SeedRoot',
     seedRoot,
     '-SessionManifestPath',
     manifestPath,
+  ];
+  if (keepRunning) {
+    argumentsList.push('-KeepRunning');
+  }
+  execFileSync('pwsh', [
+    ...argumentsList,
   ], {
     cwd: remoteRoot,
     windowsHide: true,
@@ -217,6 +227,23 @@ liveTest('launches a seeded live session for direct pipe and HTTP checks', async
     client?.stop();
     stopProcessTree(manifest?.remote_process_id);
     stopProcessTree(manifest?.process_id);
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+liveTest('launch-only session tears itself down cleanly when not kept running', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'emule-remote-live-cleanup-'));
+  const manifestPath = path.join(tempRoot, 'session-manifest.json');
+
+  try {
+    const manifest = await startLiveSession(manifestPath, false);
+    assert.equal(manifest.launch_status, 'launch_only_ready');
+    assert.equal(manifest.cleanup_requested, true);
+    assert.equal(manifest.cleanup_success, true);
+    assert.ok((manifest.cleanup_attempts ?? 0) >= 1);
+    assert.deepEqual(manifest.leftover_process_ids ?? [], []);
+    assert.ok(Array.isArray(manifest.cleanup_stopped_process_ids));
+  } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });

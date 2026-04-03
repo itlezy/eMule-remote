@@ -13,6 +13,8 @@ const liveTest = runLivePipeTest ? test : test.skip;
 
 interface LiveSessionManifest {
   launch_status: string;
+  build_exe_path: string;
+  launched_exe_path: string;
   profile_runs_root: string;
   profile_root: string;
   profile_latest_root: string;
@@ -39,15 +41,14 @@ async function waitForConnected(client: PipeClient): Promise<void> {
  */
 async function startLiveSession(manifestPath: string): Promise<LiveSessionManifest> {
   const remoteRoot = process.cwd();
-  const workspaceRoot = path.resolve(remoteRoot, '..', 'eMule-build');
   const testsRoot = path.resolve(remoteRoot, '..', 'eMule-build-tests');
-  const helperPath = path.join(workspaceRoot, 'eMule', 'helpers', 'helper-runtime-pipe-live-session.ps1');
+  const wrapperPath = path.join(testsRoot, 'scripts', 'run-pipe-live-matrix.ps1');
   const seedRoot = path.join(testsRoot, 'manifests', 'live-profile-seed');
   execFileSync('pwsh', [
     '-NoLogo',
     '-NoProfile',
     '-File',
-    helperPath,
+    wrapperPath,
     '-SkipBuild',
     '-LaunchOnly',
     '-KeepRunning',
@@ -113,6 +114,8 @@ liveTest('launches a seeded live session for direct pipe and HTTP checks', async
   try {
     manifest = await startLiveSession(manifestPath);
     assert.equal(manifest.launch_status, 'launch_only_ready');
+    assert.match(path.basename(manifest.build_exe_path), /^emule\.exe$/i);
+    assert.match(path.basename(manifest.launched_exe_path), /^eMule_v072_harness\.exe$/i);
     assert.equal(path.dirname(manifest.profile_root), manifest.profile_runs_root);
     assert.equal(manifest.profile_latest_published, true);
 

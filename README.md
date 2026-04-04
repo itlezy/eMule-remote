@@ -8,14 +8,14 @@ It provides:
 - a named-pipe client that talks to the running eMule desktop app
 - a local pointer to the canonical contract in [`docs/API-CONTRACT.md`](./docs/API-CONTRACT.md)
 
-This project lives next to the main workspace at:
+This project lives next to the clean `v0.72a` workspace at:
 
 - `C:\prj\p2p\eMule\eMulebb\eMule-remote`
 
 ## Requirements
 
 - Node.js 22 or newer
-- a built `emule.exe` from the sibling `eMule-build` workspace
+- a built `emule.exe` from the sibling `eMule-build-v0.72` workspace
 
 The remote connects to the eMule named pipe:
 
@@ -37,6 +37,14 @@ The repo includes Windows-friendly helpers in [`scripts`](./scripts):
   Runs the Fastify server directly from TypeScript for development.
 - `scripts\run-remote.cmd`
   Starts the built server and auto-builds first if needed.
+
+## Supported Branch
+
+- `v0.72a-clean`
+
+Historical frozen branch:
+
+- `main`
 
 ## Default Runtime
 
@@ -101,5 +109,5 @@ scripts\dev-remote.cmd
 - The desktop eMule process must be running for the remote to reach the named pipe.
 - `GET /health` stays available even if eMule is not connected yet.
 - The bundled web UI is served from the same Fastify process as the API.
-- The canonical API contract lives in the sibling app repo at `eMule-build\eMule\docs\PLAN-API-SERVER.md`.
+- The canonical API contract lives in the sibling app repo at `eMule-build-v0.72\eMule\docs\PLAN-API-SERVER.md`.
 - External API clients use bearer auth, while the bundled UI uses a same-origin cookie set by `/`.

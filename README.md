@@ -8,9 +8,8 @@ It provides:
 - a named-pipe client that talks to the running eMule desktop app
 - a local pointer to the canonical contract in [`docs/API-CONTRACT.md`](./docs/API-CONTRACT.md)
 
-This project lives next to the main workspace at:
-
-- `C:\prj\p2p\eMule\eMulebb\eMule-remote`
+In the canonical layout this repo lives under
+`EMULE_WORKSPACE_ROOT\repos\eMule-remote`.
 
 ## Requirements
 
@@ -101,5 +100,6 @@ scripts\dev-remote.cmd
 - The desktop eMule process must be running for the remote to reach the named pipe.
 - `GET /health` stays available even if eMule is not connected yet.
 - The bundled web UI is served from the same Fastify process as the API.
-- The canonical API contract lives in the sibling app repo at `eMule-build\eMule\docs\PLAN-API-SERVER.md`.
+- The canonical API contract is tracked in the tooling docs as
+  [`PLAN-API-SERVER.md`](../../../repos/eMule-tooling/docs/PLAN-API-SERVER.md).
 - External API clients use bearer auth, while the bundled UI uses a same-origin cookie set by `/`.

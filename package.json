@@ -13,7 +13,8 @@
     "build:web": "vite build",
     "build": "npm run build:web && npm run build:server",
     "start": "node dist/server/index.js",
-    "test": "tsx --test src/server/**/*.test.ts"
+    "test": "tsx --test src/server/**/*.test.ts",
+    "smoke:live": "tsx scripts/live-rest-contract-smoke.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",

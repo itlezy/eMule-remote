@@ -18,7 +18,7 @@ In the canonical layout this repo lives under
 
 By default the remote expects the local eMule REST endpoint at:
 
-- `http://127.0.0.1:4711/api/v1`
+- `http://127.0.0.1:4711`
 
 ## Install
 
@@ -69,7 +69,8 @@ The API base is:
 - `EMULE_REMOTE_TOKEN`
   Bearer token for external API clients. Default: `change-me`
 - `EMULE_REMOTE_EMULE_BASE_URL`
-  Upstream eMule REST base URL. Default: `http://127.0.0.1:4711`
+  Upstream eMule listener root. Default: `http://127.0.0.1:4711`
+  Do not append `/api/v1`; the remote proxy adds that path itself.
 - `EMULE_REMOTE_EMULE_API_KEY`
   Upstream eMule REST API key. No default.
 - `EMULE_REMOTE_TIMEOUT_MS`
@@ -95,10 +96,22 @@ Run the server in development mode:
 scripts\dev-remote.cmd
 ```
 
+Run the live proxy contract smoke against a real local eMule REST listener:
+
+```cmd
+npm run smoke:live
+```
+
+The smoke uses:
+
+- `EMULE_REMOTE_EMULE_BASE_URL` for the upstream listener root
+- `EMULE_REMOTE_EMULE_API_KEY` for the upstream `X-API-Key`
+
 ## Notes
 
 - The desktop eMule process must be running and reachable on its WebServer/REST endpoint.
 - `GET /health` stays available even if eMule is unreachable.
+- `/health` is a local `eMule-remote` helper route, not part of the upstream eMule REST contract.
 - The bundled web UI is served from the same Fastify process as the API.
 - External API clients use bearer auth, while the bundled UI uses a same-origin cookie set by `/`.
 - The remote injects the upstream `X-API-Key` server-side, so the browser never sees the eMule API key.

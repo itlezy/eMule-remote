@@ -1,7 +1,7 @@
-<script lang="ts">
+  <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from './lib/api';
-  import type { AppVersion, GlobalStats, KadStatus, LogEntry, MutationResponse, PipeEventEnvelope, Preferences, SearchResultsResponse, Server, ServerStatus, SharedFile, Source, Transfer, UploadEntry } from './lib/types';
+  import type { AppVersion, GlobalStats, KadStatus, LogEntry, MutationResponse, Preferences, SearchResultsResponse, Server, ServerStatus, SharedFile, Source, Transfer, UploadEntry } from './lib/types';
 
   type Section = 'transfers' | 'uploads' | 'servers' | 'kad' | 'shared' | 'search' | 'preferences' | 'logs';
   type QueueFilter = 'all' | 'active' | 'transferring' | 'stopped' | 'completed';
@@ -54,7 +54,7 @@
   let selectedShared: SharedFile | null = null;
   let selectedHashes: string[] = [];
   let selectedSharedHash = '';
-  let pipeConnected = false;
+  let emuleReachable = false;
   let isRefreshing = false;
   let isInitialLoad = true;
   let isSelectionRefreshing = false;
@@ -126,8 +126,8 @@
 
   async function refreshOverview(): Promise<boolean> {
     const health = await api.health();
-    pipeConnected = health.pipeConnected;
-    if (!health.pipeConnected)
+    emuleReachable = health.emuleReachable;
+    if (!health.emuleReachable)
       return false;
     const [nextVersion, nextStats] = await Promise.all([api.appVersion(), api.statsGlobal()]);
     version = nextVersion;
@@ -233,7 +233,20 @@
       return;
     clearMessages();
     try {
-      const response = await api.transfersAdd(links);
+      const response = {
+        results: await Promise.all(links.map(async (link) => {
+          try {
+            const result = await api.transferAdd(link);
+            return { hash: result.hash, ok: true, name: result.name };
+          } catch (error) {
+            return {
+              hash: null,
+              ok: false,
+              error: error instanceof Error ? error.message : 'failed to add link',
+            };
+          }
+        })),
+      };
       addLinksValue = '';
       summarizeMutation('resume', response, links.length);
       await refreshTransfers();
@@ -408,15 +421,27 @@
     }
   }
 
-  async function handleEvent(event: PipeEventEnvelope): Promise<void> {
-    pipeConnected = true;
-    if (event.event === 'ready')
+  async function refreshActiveSection(): Promise<void> {
+    const connected = await refreshOverview();
+    if (!connected)
       return;
-    await refreshOverview();
-    if (event.event.startsWith('transfer_')) await refreshTransfers();
-    if (event.event === 'server_connected' || event.event === 'server_disconnected') await refreshServers();
-    if (event.event === 'kad_status_changed') await refreshKad();
-    if (event.event === 'search_results') await refreshSearch();
+
+    if (activeSection === 'transfers')
+      await refreshTransfers();
+    if (activeSection === 'uploads')
+      await refreshUploads();
+    if (activeSection === 'servers')
+      await refreshServers();
+    if (activeSection === 'kad')
+      await refreshKad();
+    if (activeSection === 'shared')
+      await refreshShared();
+    if (activeSection === 'preferences')
+      await refreshPreferences();
+    if (activeSection === 'logs')
+      await refreshLogs();
+    if (activeSection === 'search' || searchId)
+      await refreshSearch();
   }
 
   $: visibleTransfers = transfers
@@ -428,12 +453,33 @@
   $: filteredLogs = logs.filter((entry) => logFilter === 'all' || (logFilter === 'debug' ? entry.debug || entry.level === 'debug' : entry.level === logFilter));
 
   onMount(() => {
-    void refreshAll();
-    const source = api.events((event) => void handleEvent(event));
-    source.onerror = () => {
-      pipeConnected = false;
+    let disposed = false;
+    let pollHandle: ReturnType<typeof setTimeout> | undefined;
+
+    const scheduleNextPoll = () => {
+      if (disposed)
+        return;
+      const delayMs = searchId ? 2000 : 5000;
+      pollHandle = setTimeout(async () => {
+        try {
+          await refreshActiveSection();
+        } catch {
+          emuleReachable = false;
+        } finally {
+          scheduleNextPoll();
+        }
+      }, delayMs);
     };
-    return () => source.close();
+
+    void refreshAll().finally(() => {
+      scheduleNextPoll();
+    });
+
+    return () => {
+      disposed = true;
+      if (pollHandle !== undefined)
+        clearTimeout(pollHandle);
+    };
   });
 </script>
 
@@ -448,9 +494,9 @@
         <p class="panel-kicker">eMule Remote</p>
         <div class="flex flex-col gap-3 md:flex-row md:items-center">
           <h1 class="text-3xl font-semibold tracking-tight text-slate-950">{version ? `${version.appName} ${version.version}` : 'Remote Control'}</h1>
-          <span class={networkBadge(pipeConnected)}>{pipeConnected ? 'Pipe connected' : 'Pipe disconnected'}</span>
+          <span class={networkBadge(emuleReachable)}>{emuleReachable ? 'eMule reachable' : 'eMule unreachable'}</span>
         </div>
-        <p class="max-w-3xl text-sm text-slate-600">Grouped operator console for the canonical pipe API. One naming standard, no compatibility layer.</p>
+        <p class="max-w-3xl text-sm text-slate-600">Grouped operator console for the exact eMule REST surface. Same routes, same payloads, same behavior.</p>
       </div>
       <div class="header-actions flex flex-wrap items-center gap-2">
         {#if version}

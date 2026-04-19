@@ -6,9 +6,9 @@ export interface RemoteConfig {
   host: string;
   port: number;
   bearerToken: string;
-  pipeName: string;
+  emuleBaseUrl: string;
+  emuleApiKey: string;
   requestTimeoutMs: number;
-  reconnectDelayMs: number;
   webRoot: string;
 }
 
@@ -26,9 +26,9 @@ export function loadConfig(): RemoteConfig {
     host: process.env.EMULE_REMOTE_HOST ?? '127.0.0.1',
     port: parseNumber(process.env.EMULE_REMOTE_PORT, 4713),
     bearerToken: process.env.EMULE_REMOTE_TOKEN ?? 'change-me',
-    pipeName: process.env.EMULE_REMOTE_PIPE ?? '\\\\.\\pipe\\emule-api',
+    emuleBaseUrl: process.env.EMULE_REMOTE_EMULE_BASE_URL ?? 'http://127.0.0.1:4711',
+    emuleApiKey: process.env.EMULE_REMOTE_EMULE_API_KEY ?? '',
     requestTimeoutMs: parseNumber(process.env.EMULE_REMOTE_TIMEOUT_MS, 5000),
-    reconnectDelayMs: parseNumber(process.env.EMULE_REMOTE_RECONNECT_MS, 1500),
     webRoot: path.resolve(process.cwd(), 'dist', 'web'),
   };
 }

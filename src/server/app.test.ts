@@ -1,49 +1,52 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import type { FastifyInstance } from 'fastify';
 
-import { createApp, type PipeBridge } from './app.js';
+import { createApp } from './app.js';
 import type { RemoteConfig } from './config.js';
+import { HttpError } from './errors.js';
+import type { EmuleBridge, RequestMethod } from './rest/EmuleRestClient.js';
 
-class MockPipeClient extends EventEmitter implements PipeBridge {
-  private connected = true;
-  private readonly handlers = new Map<string, (params: Record<string, unknown> | undefined) => unknown>();
+interface RecordedRequest {
+  method: RequestMethod;
+  path: string;
+  body: unknown;
+}
 
-  setConnected(connected: boolean): void {
-    this.connected = connected;
+class MockEmuleBridge implements EmuleBridge {
+  reachable = true;
+  readonly requests: RecordedRequest[] = [];
+  private readonly handlers = new Map<string, () => unknown>();
+
+  setResponse(method: RequestMethod, path: string, response: unknown): void {
+    this.handlers.set(`${method} ${path}`, () => response);
   }
 
-  register(cmd: string, handler: (params: Record<string, unknown> | undefined) => unknown): void {
-    this.handlers.set(cmd, handler);
+  setFailure(method: RequestMethod, path: string, error: HttpError): void {
+    this.handlers.set(`${method} ${path}`, () => {
+      throw error;
+    });
   }
 
-  isConnected(): boolean {
-    return this.connected;
+  async probe(): Promise<boolean> {
+    return this.reachable;
   }
 
-  async sendCommand<T>(cmd: string, params?: Record<string, unknown>): Promise<T> {
-    if (!this.connected) {
-      throw { code: 'EMULE_UNAVAILABLE', message: 'eMule pipe is not connected' };
-    }
-
-    const handler = this.handlers.get(cmd);
+  async requestJson<T>(method: RequestMethod, path: string, body?: unknown): Promise<T> {
+    this.requests.push({ method, path, body });
+    const handler = this.handlers.get(`${method} ${path}`);
     if (!handler) {
-      throw new Error(`no handler for ${cmd}`);
+      throw new HttpError(404, 'NOT_FOUND', `no handler for ${method} ${path}`);
     }
-
-    return handler(params) as T;
-  }
-
-  stop(): void {
+    return handler() as T;
   }
 }
 
-async function withApp(run: (app: FastifyInstance, pipe: MockPipeClient) => Promise<void>): Promise<void> {
+async function withApp(run: (app: FastifyInstance, emule: MockEmuleBridge) => Promise<void>): Promise<void> {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'emule-remote-test-'));
   const webRoot = path.join(tempRoot, 'web');
   const assetsRoot = path.join(webRoot, 'assets');
@@ -55,17 +58,17 @@ async function withApp(run: (app: FastifyInstance, pipe: MockPipeClient) => Prom
     host: '127.0.0.1',
     port: 0,
     bearerToken: 'test-token',
-    pipeName: '\\\\.\\pipe\\test',
+    emuleBaseUrl: 'http://127.0.0.1:4711',
+    emuleApiKey: 'test-api-key',
     requestTimeoutMs: 500,
-    reconnectDelayMs: 500,
     webRoot,
   };
 
-  const pipe = new MockPipeClient();
-  const app = await createApp(config, pipe);
+  const emule = new MockEmuleBridge();
+  const app = await createApp(config, emule);
 
   try {
-    await run(app, pipe);
+    await run(app, emule);
   } finally {
     await app.close();
     await rm(tempRoot, { recursive: true, force: true });
@@ -73,11 +76,10 @@ async function withApp(run: (app: FastifyInstance, pipe: MockPipeClient) => Prom
 }
 
 test('rejects API requests without auth', async () => {
-  await withApp(async (app, pipe) => {
-    pipe.register('app/version', () => ({ appName: 'eMule' }));
+  await withApp(async (app) => {
     const response = await app.inject({
       method: 'GET',
-      url: '/api/v2/app/version',
+      url: '/api/v1/app/version',
     });
 
     assert.equal(response.statusCode, 401);
@@ -103,32 +105,143 @@ test('allows UI root and sets the UI cookie', async () => {
   });
 });
 
-test('validates MD4 hash parameters', async () => {
-  await withApp(async (app) => {
+test('reports eMule reachability in health checks', async () => {
+  await withApp(async (app, emule) => {
+    emule.reachable = false;
+
     const response = await app.inject({
       method: 'GET',
-      url: '/api/v2/transfers/not-a-hash',
+      url: '/health',
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), {
+      ok: true,
+      emuleReachable: false,
+    });
+  });
+});
+
+test('proxies GET routes 1:1 to the upstream REST surface', async () => {
+  await withApp(async (app, emule) => {
+    emule.setResponse('GET', '/api/v1/app/version', { appName: 'eMule' });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/app/version',
       headers: {
         authorization: 'Bearer test-token',
       },
     });
 
-    assert.equal(response.statusCode, 400);
-    assert.deepEqual(response.json(), {
-      error: 'INVALID_ARGUMENT',
-      message: 'hash must be a 32-character lowercase MD4 hex string',
-    });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), { appName: 'eMule' });
+    assert.deepEqual(emule.requests, [
+      {
+        method: 'GET',
+        path: '/api/v1/app/version',
+        body: undefined,
+      },
+    ]);
   });
 });
 
-test('returns 503 when the pipe is disconnected', async () => {
-  await withApp(async (app, pipe) => {
-    pipe.setConnected(false);
-    pipe.register('stats/global', () => ({ connected: false }));
+test('preserves query strings exactly when proxying', async () => {
+  await withApp(async (app, emule) => {
+    emule.setResponse('GET', '/api/v1/log?limit=9999', []);
 
     const response = await app.inject({
       method: 'GET',
-      url: '/api/v2/stats/global',
+      url: '/api/v1/log?limit=9999',
+      headers: {
+        authorization: 'Bearer test-token',
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), []);
+    assert.deepEqual(emule.requests, [
+      {
+        method: 'GET',
+        path: '/api/v1/log?limit=9999',
+        body: undefined,
+      },
+    ]);
+  });
+});
+
+test('proxies POST bodies 1:1 without batching or reshaping', async () => {
+  await withApp(async (app, emule) => {
+    emule.setResponse('POST', '/api/v1/transfers/add', {
+      hash: '8958fd13501ed0347af4df142e8f5f9e',
+      name: 'Example.bin',
+    });
+
+    const payload = { link: 'ed2k://|file|Example.bin|123|8958fd13501ed0347af4df142e8f5f9e|/' };
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transfers/add',
+      headers: {
+        authorization: 'Bearer test-token',
+      },
+      payload,
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), {
+      hash: '8958fd13501ed0347af4df142e8f5f9e',
+      name: 'Example.bin',
+    });
+    assert.deepEqual(emule.requests, [
+      {
+        method: 'POST',
+        path: '/api/v1/transfers/add',
+        body: payload,
+      },
+    ]);
+  });
+});
+
+test('keeps upstream search payloads unchanged', async () => {
+  await withApp(async (app, emule) => {
+    emule.setResponse('POST', '/api/v1/search/start', { search_id: '123' });
+    const payload = {
+      query: '1080p',
+      method: 'kad',
+      type: 'video',
+      min_size: 700,
+      max_size: 4096,
+      ext: '.mkv',
+    };
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/search/start',
+      headers: {
+        authorization: 'Bearer test-token',
+      },
+      payload,
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), { search_id: '123' });
+    assert.deepEqual(emule.requests, [
+      {
+        method: 'POST',
+        path: '/api/v1/search/start',
+        body: payload,
+      },
+    ]);
+  });
+});
+
+test('propagates upstream REST errors without remapping the route contract', async () => {
+  await withApp(async (app, emule) => {
+    emule.setFailure('GET', '/api/v1/stats/global', new HttpError(503, 'EMULE_UNAVAILABLE', 'eMule REST is not reachable'));
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/stats/global',
       headers: {
         authorization: 'Bearer test-token',
       },
@@ -137,330 +250,7 @@ test('returns 503 when the pipe is disconnected', async () => {
     assert.equal(response.statusCode, 503);
     assert.deepEqual(response.json(), {
       error: 'EMULE_UNAVAILABLE',
-      message: 'eMule pipe is not connected',
-    });
-  });
-});
-
-test('clamps the log limit to the documented maximum', async () => {
-  await withApp(async (app, pipe) => {
-    let observedLimit = 0;
-    pipe.register('log/get', (params) => {
-      observedLimit = Number(params?.limit ?? 0);
-      return [];
-    });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/v2/log?limit=9999',
-      headers: {
-        authorization: 'Bearer test-token',
-      },
-    });
-
-    assert.equal(response.statusCode, 200);
-    assert.equal(observedLimit, 500);
-    assert.deepEqual(response.json(), []);
-  });
-});
-
-test('preserves delete semantics for partial downloads', async () => {
-  await withApp(async (app, pipe) => {
-    pipe.register('transfers/delete', (params) => ({
-      results: [
-        {
-          hash: params?.hashes && Array.isArray(params.hashes) ? params.hashes[0] : null,
-          ok: params?.deleteFiles === true,
-          ...(params?.deleteFiles === true ? {} : { error: 'partial download deletion requires deleteFiles=true' }),
-        },
-      ],
-    }));
-
-    const withoutDeleteFiles = await app.inject({
-      method: 'POST',
-      url: '/api/v2/transfers/delete',
-      headers: {
-        authorization: 'Bearer test-token',
-      },
-      payload: {
-        hashes: ['8958fd13501ed0347af4df142e8f5f9e'],
-      },
-    });
-
-    assert.equal(withoutDeleteFiles.statusCode, 200);
-    assert.deepEqual(withoutDeleteFiles.json(), {
-      results: [
-        {
-          hash: '8958fd13501ed0347af4df142e8f5f9e',
-          ok: false,
-          error: 'partial download deletion requires deleteFiles=true',
-        },
-      ],
-    });
-
-    const withDeleteFiles = await app.inject({
-      method: 'POST',
-      url: '/api/v2/transfers/delete',
-      headers: {
-        authorization: 'Bearer test-token',
-      },
-      payload: {
-        hashes: ['8958fd13501ed0347af4df142e8f5f9e'],
-        deleteFiles: true,
-      },
-    });
-
-    assert.equal(withDeleteFiles.statusCode, 200);
-    assert.deepEqual(withDeleteFiles.json(), {
-      results: [
-        {
-          hash: '8958fd13501ed0347af4df142e8f5f9e',
-          ok: true,
-        },
-      ],
-    });
-  });
-});
-
-test('maps transfer detail routes to the final pipe surface', async () => {
-  await withApp(async (app, pipe) => {
-    pipe.register('transfers/get', (params) => ({
-      hash: params?.hash,
-      name: 'Example.bin',
-    }));
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/v2/transfers/8958fd13501ed0347af4df142e8f5f9e',
-      headers: {
-        authorization: 'Bearer test-token',
-      },
-    });
-
-    assert.equal(response.statusCode, 200);
-    assert.deepEqual(response.json(), {
-      hash: '8958fd13501ed0347af4df142e8f5f9e',
-      name: 'Example.bin',
-    });
-  });
-});
-
-test('maps search start routes to the canonical pipe surface', async () => {
-  await withApp(async (app, pipe) => {
-    let observedParams: Record<string, unknown> | undefined;
-    pipe.register('search/start', (params) => {
-      observedParams = params;
-      return { search_id: '42' };
-    });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v2/search/start',
-      headers: {
-        authorization: 'Bearer test-token',
-      },
-      payload: {
-        query: '1080p',
-        method: 'kad',
-        type: 'video',
-        min_size: 700,
-        max_size: 4096,
-        ext: '.mkv',
-      },
-    });
-
-    assert.equal(response.statusCode, 200);
-    assert.deepEqual(response.json(), { search_id: '42' });
-    assert.deepEqual(observedParams, {
-      query: '1080p',
-      method: 'kad',
-      type: 'video',
-      min_size: 700,
-      max_size: 4096,
-      ext: '.mkv',
-    });
-  });
-});
-
-test('validates search start payloads before calling the pipe', async () => {
-  await withApp(async (app) => {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v2/search/start',
-      headers: {
-        authorization: 'Bearer test-token',
-      },
-      payload: {
-        query: '   ',
-      },
-    });
-
-    assert.equal(response.statusCode, 400);
-    assert.deepEqual(response.json(), {
-      error: 'INVALID_ARGUMENT',
-      message: 'query must not be empty',
-    });
-  });
-});
-
-test('maps search results routes to the canonical pipe surface', async () => {
-  await withApp(async (app, pipe) => {
-    let observedParams: Record<string, unknown> | undefined;
-    pipe.register('search/results', (params) => {
-      observedParams = params;
-      return { status: 'running', results: [] };
-    });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/v2/search/results?search_id=123',
-      headers: {
-        authorization: 'Bearer test-token',
-      },
-    });
-
-    assert.equal(response.statusCode, 200);
-    assert.deepEqual(response.json(), { status: 'running', results: [] });
-    assert.deepEqual(observedParams, { search_id: '123' });
-  });
-});
-
-test('maps search stop routes to the canonical pipe surface', async () => {
-  await withApp(async (app, pipe) => {
-    let observedParams: Record<string, unknown> | undefined;
-    pipe.register('search/stop', (params) => {
-      observedParams = params;
-      return { ok: true };
-    });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v2/search/stop',
-      headers: {
-        authorization: 'Bearer test-token',
-      },
-      payload: {
-        search_id: '123',
-      },
-    });
-
-    assert.equal(response.statusCode, 200);
-    assert.deepEqual(response.json(), { ok: true });
-    assert.deepEqual(observedParams, { search_id: '123' });
-  });
-});
-
-test('batches transfer add requests over the single-link pipe command', async () => {
-  await withApp(async (app, pipe) => {
-    let callCount = 0;
-    pipe.register('transfers/add', (params) => {
-      callCount += 1;
-      return {
-        hash: `hash-${callCount}`,
-        name: params?.link,
-      };
-    });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v2/transfers/add',
-      headers: {
-        authorization: 'Bearer test-token',
-      },
-      payload: {
-        links: ['ed2k://|file|one|/', 'ed2k://|file|two|/'],
-      },
-    });
-
-    assert.equal(response.statusCode, 200);
-    assert.equal(callCount, 2);
-    assert.deepEqual(response.json(), {
-      results: [
-        { hash: 'hash-1', ok: true, name: 'ed2k://|file|one|/' },
-        { hash: 'hash-2', ok: true, name: 'ed2k://|file|two|/' },
-      ],
-    });
-  });
-});
-
-test('maps shared add routes to the canonical pipe surface', async () => {
-  await withApp(async (app, pipe) => {
-    pipe.register('shared/add', (params) => ({
-      ok: true,
-      path: params?.path,
-      alreadyShared: false,
-      queued: false,
-      file: null,
-    }));
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v2/shared/add',
-      headers: {
-        authorization: 'Bearer test-token',
-      },
-      payload: {
-        path: 'C:\\share\\Example.bin',
-      },
-    });
-
-    assert.equal(response.statusCode, 200);
-    assert.deepEqual(response.json(), {
-      ok: true,
-      path: 'C:\\share\\Example.bin',
-      alreadyShared: false,
-      queued: false,
-      file: null,
-    });
-  });
-});
-
-test('rejects ambiguous shared remove selectors', async () => {
-  await withApp(async (app) => {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v2/shared/remove',
-      headers: {
-        authorization: 'Bearer test-token',
-      },
-      payload: {
-        hash: '8958fd13501ed0347af4df142e8f5f9e',
-        path: 'C:\\share\\Example.bin',
-      },
-    });
-
-    assert.equal(response.statusCode, 400);
-    assert.deepEqual(response.json(), {
-      error: 'INVALID_ARGUMENT',
-      message: 'exactly one of hash or path must be provided',
-    });
-  });
-});
-
-test('maps upload release-slot routes to the canonical pipe surface', async () => {
-  await withApp(async (app, pipe) => {
-    pipe.register('uploads/release_slot', (params) => ({
-      ok: true,
-      selector: params,
-    }));
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v2/uploads/release_slot',
-      headers: {
-        authorization: 'Bearer test-token',
-      },
-      payload: {
-        userHash: '8958fd13501ed0347af4df142e8f5f9e',
-      },
-    });
-
-    assert.equal(response.statusCode, 200);
-    assert.deepEqual(response.json(), {
-      ok: true,
-      selector: {
-        userHash: '8958fd13501ed0347af4df142e8f5f9e',
-      },
+      message: 'eMule REST is not reachable',
     });
   });
 });
